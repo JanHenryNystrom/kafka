@@ -35,7 +35,7 @@
 %% Types
 -type request() :: #metadata{} | #produce{} | #offset{}.
 -type response() :: #metadata_response{} | #produce_response{} |
-                    #offset_respone{}.
+                    #offset_response{}.
 
 %% Records
 
@@ -147,7 +147,7 @@ decode(produce, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #produce_response{corr_id = CorrId,
                       topics = decode_topics(produce, No, T, [])};
 decode(offset, <<_:?SIZE_S, CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
-    #offset_respone{corr_id = CorrId,
+    #offset_response{corr_id = CorrId,
                     topics = decode_topics(offset, No, T, [])}.
 
 %% ===================================================================
@@ -207,6 +207,7 @@ encode_string_array(Strings) ->
      [encode_latin1_to_string(String) || String <- Strings]].
 
 encode_latin1_to_string("") -> <<-1:?STRING_SIZE_S>>;
+encode_latin1_to_string(<<"">>) -> <<-1:?STRING_SIZE_S>>;
 encode_latin1_to_string(String) ->
     Binary = unicode:characters_to_binary(String, latin1, utf8),
     <<(byte_size(Binary)):?STRING_SIZE_S, Binary/binary>>.
@@ -250,7 +251,7 @@ decode_topics(offset, N, Binary, Acc) ->
     H = #topic_response{name = Name, partitions = Partitions},
     decode_topics(offset, N - 1, T, [H | Acc]).
 
-decode_partitions(metadata, 0, T, Acc) -> {lists:reverse(Acc), T};
+decode_partitions(_, 0, T, Acc) -> {lists:reverse(Acc), T};
 decode_partitions(metadata, N, Binary, Acc) ->
     <<ErrorCode:?ERROR_CODE,
       Id:?ID,

@@ -63,7 +63,7 @@
                         }).
 
 -record(broker, {node_id :: integer(),
-                 host :: string(),
+                 host :: binary(),
                  port :: integer()}).
 
 -record(metadata_response, {corr_id :: integer(),
@@ -71,5 +71,5 @@
                             topics = [] :: [#topic_response{}]}).
 -record(produce_response, {corr_id :: integer(),
                            topics = [] :: [#topic_response{}]}).
--record(offset_respone, {corr_id :: integer(),
+-record(offset_response, {corr_id :: integer(),
                          topics = []:: [#topic_response{}]}).
