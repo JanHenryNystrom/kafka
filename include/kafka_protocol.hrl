@@ -20,20 +20,56 @@
 %% Encoding
 %% ===================================================================
 
-%% offset request
--record(offset, {replica = 0, topics = []}).
-
-%% offset, produce requests
--record(topic, {name, partitions = []}).
--record(partition, {id, set = [], time, max_number_of_offsets}).
-
 %% produce request
--record(set, {messages}).
--record(message, {offset = 0,
-                  crc,
-                  magic = 1,
-                  attributes = 0,
+-record(message, {offset = 0 :: integer(),
+                  magic = 1 :: integer(),
+                  attributes = 0 :: integer(),
                   key  = <<>> :: binary(),
                   value :: binary()}).
+-record(set, {messages = [] :: [#message{}]}).
 
+%% offset, produce requests
+-record(partition, {id :: integer(),
+                    set = [] :: [#set{}],
+                    time :: integer(),
+                    max_number_of_offsets :: integer()}).
+-record(topic, {name :: string() | binary(),
+                partitions = [] :: [#partition{}]}).
 
+%% requests
+-record(metadata, {topics = [] :: [#topic{}]}).
+-record(produce, {acks = 0 :: integer(),
+                  timeout = 100 :: non_neg_integer(),
+                  topics = [] :: [#topic{}]}).
+-record(offset, {replica = 0 :: non_neg_integer(),
+                 topics = [#topic{}]}).
+
+%% ===================================================================
+%% Decoding
+%% ===================================================================
+
+%% responses
+-record(partition_response, {id :: integer(),
+                             error_code :: atom(),
+                             %% metadata
+                             leader :: integer(),
+                             replicas :: [integer()],
+                             isrs :: [integer()],
+                             %% produce, offset
+                             offset :: integer() | [integer()]}).
+-record(topic_response, {name :: binary(),
+                         partitions = [] :: [#partition_response{}],
+                         error_code :: atom()
+                        }).
+
+-record(broker, {node_id :: integer(),
+                 host :: string(),
+                 port :: integer()}).
+
+-record(metadata_response, {corr_id :: integer(),
+                            brokers = [] :: [#broker{}],
+                            topics = [] :: [#topic_response{}]}).
+-record(produce_response, {corr_id :: integer(),
+                           topics = [] :: [#topic_response{}]}).
+-record(offset_respone, {corr_id :: integer(),
+                         topics = []:: [#topic_response{}]}).

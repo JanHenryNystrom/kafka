@@ -26,12 +26,16 @@
 -copyright('Jan Henry Nystrom <JanHenryNystrom@gmail.com>').
 
 %% Library functions
--export([encode/4 ]).
+-export([encode/4,
+         decode/2]).
 
 %% Includes
 -include_lib("kafka/include/kafka_protocol.hrl").
 
 %% Types
+-type request() :: #metadata{} | #produce{} | #offset{}.
+-type response() :: #metadata_response{} | #produce_response{} |
+                    #offset_respone{}.
 
 %% Records
 
@@ -51,16 +55,25 @@
 -define(OFFSET_COMMIT_REQUEST, 6).
 -define(OFFSET_FETCH_REQUEST, 7).
 
+%% -----------
 %% Field sizes.
+%% -----------
 
 %% All types
 -define(SIZE_S, 32/signed).
 -define(CORR_ID_S, 32/signed).
 -define(ARRAY_SIZE_S, 32/signed).
 -define(STRING_SIZE_S, 16/signed).
+-define(ID, 32/signed).
+-define(ERROR_CODE, 16/signed).
 
 %% produce, offset
--define(ID, 32/signed).
+-define(OFFSETS, binary-unit:64).
+
+%% metadata
+-define(LEADER, 32/signed).
+-define(IDS, binary-unit:32).
+-define(PORT, 32/signed).
 
 %% produce
 -define(ACKS_S, 16/signed).
@@ -75,6 +88,22 @@
 -define(TIME_S, 64/signed).
 -define(MAX_S, 32/signed).
 
+%% Error code tables.
+-define(ERROR_CODES_TABLE,
+        [{0, 'NoError'},
+         {-1, 'Unknown'},
+         {1, 'OffsetOutOfRange'},
+         {2, 'InvalidMessage'},
+         {3, 'UnknownTopicOrPartition'},
+         {4, 'InvalidMessageSize'},
+         {5, 'LeaderNotAvailable'},
+         {6, 'NotLeaderForPartition'},
+         {7, 'RequestTimedOut'},
+         {8, 'BrokerNotAvailable'},
+         {9, 'ReplicaNotAvailable'},
+         {10, 'MessageSizeTooLarge'},
+         {11, 'StaleControllerEpochCode'},
+         {12, 'OffsetMetadataTooLargeCode'}]).
 
 %% What decoder/type keys to use.
 -define(API_KEY_TABLE, [{metadata, ?METADATA_REQUEST},
@@ -92,14 +121,34 @@
 %%   Encodes a kafka request.
 %% @end
 %%--------------------------------------------------------------------
--spec encode(atom(), integer(), string(), _) -> iolist().
+-spec encode(atom(), integer(), string(), request()) -> iolist().
 %%--------------------------------------------------------------------
 encode(Type, CorrId, ClientId, Args) ->
     {Type, ApiKey} = lists:keyfind(Type, 1, ?API_KEY_TABLE),
     Request = [<<ApiKey:?ApiKey, ?API_VERSION, CorrId:?CORR_ID_S>>,
-               encode_latin1_to_string(ClientId), encode(Type, Args)],
+               encode_latin1_to_string(ClientId), encode(Args)],
     Size = iolist_size(Request),
     [<<Size:?SIZE_S>>, Request].
+
+%%--------------------------------------------------------------------
+%% Function: decode(Type, Response) -> ResponseRecord.
+%% @doc
+%%   Deccodes a kafka response.
+%% @end
+%%--------------------------------------------------------------------
+-spec decode(atom(), binary()) -> response().
+%%--------------------------------------------------------------------
+decode(metadata, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    {Brokers, <<No1:?ARRAY_SIZE_S, T1/binary>>} = decode_brokers(No, T, []),
+    #metadata_response{corr_id = CorrId,
+                       brokers = Brokers,
+                       topics = decode_topics(metadata, No1, T1, [])};
+decode(produce, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    #produce_response{corr_id = CorrId,
+                      topics = decode_topics(produce, No, T, [])};
+decode(offset, <<_:?SIZE_S, CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    #offset_respone{corr_id = CorrId,
+                    topics = decode_topics(offset, No, T, [])}.
 
 %% ===================================================================
 %% Internal functions.
@@ -109,12 +158,12 @@ encode(Type, CorrId, ClientId, Args) ->
 %% Encoding
 %% ===================================================================
 
-encode(metadata, Topics) -> encode_string_array(Topics);
-encode(produce, {RequiredAcks, Timeout, Topics}) ->
+encode(#metadata{topics = Topics}) -> encode_string_array(Topics);
+encode(#produce{acks = RequiredAcks, timeout = Timeout, topics = Topics}) ->
      [<<RequiredAcks:?ACKS_S, Timeout:?TIMEOUT_S,
         (length(Topics)):?ARRAY_SIZE_S>>,
       [encode_topic(produce, Topic) || Topic <- Topics]];
-encode(offset, #offset{replica = Id, topics = Topics}) ->
+encode(#offset{replica = Id, topics = Topics}) ->
     [<<Id:?ID, (length(Topics)):?ARRAY_SIZE_S>>,
      [encode_topic(offset, Topic) || Topic <- Topics]].
 
@@ -169,6 +218,77 @@ encode_bytes(Binary) -> <<(byte_size(Binary)):?BYTES_SIZE_S, Binary/binary>>.
 %% ===================================================================
 %% Decoding
 %% ===================================================================
+
+decode_brokers(0, T, Acc) -> {lists:reverse(Acc), T};
+decode_brokers(N, Binary, Acc) ->
+    <<NodeId:?ID, HS:?STRING_SIZE_S, Host:HS/bytes, Port:?PORT, T/binary>> =
+        Binary,
+    H = #broker{node_id = NodeId, host = Host, port = Port},
+    decode_brokers(N - 1, T, [H | Acc]).
+
+decode_topics(_, 0, <<>>, Acc) -> lists:reverse(Acc);
+decode_topics(metadata, N, Binary, Acc) ->
+    <<ErrorCode:?ERROR_CODE,
+      NS:?STRING_SIZE_S,
+      Name:NS/bytes,
+      No:?ARRAY_SIZE_S,
+      Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(metadata, No, Parts, []),
+    H = #topic_response{name = Name,
+                        partitions = Partitions,
+                        error_code = decode_error_code(ErrorCode)
+                       },
+    decode_topics(metadata, N - 1, T, [H | Acc]);
+decode_topics(produce, N, Binary, Acc) ->
+    <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(produce, No, Parts, []),
+    H = #topic_response{name = Name, partitions = Partitions},
+    decode_topics(produce, N - 1, T, [H | Acc]);
+decode_topics(offset, N, Binary, Acc) ->
+    <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(offset, No, Parts, []),
+    H = #topic_response{name = Name, partitions = Partitions},
+    decode_topics(offset, N - 1, T, [H | Acc]).
+
+decode_partitions(metadata, 0, T, Acc) -> {lists:reverse(Acc), T};
+decode_partitions(metadata, N, Binary, Acc) ->
+    <<ErrorCode:?ERROR_CODE,
+      Id:?ID,
+      Leader:?LEADER,
+      ReplicasNo:?ARRAY_SIZE_S,
+      Replicas:ReplicasNo/?IDS,
+      IsrsNo:?ARRAY_SIZE_S,
+      Isrs:IsrsNo/?IDS,
+      T/binary>> = Binary,
+    TheReplicas = [Replica || <<Replica:?ID>> <= Replicas],
+    TheIsrs = [Isr || <<Isr:?ID>> <= Isrs],
+    H = #partition_response{id = Id,
+                            leader = Leader,
+                            replicas = TheReplicas,
+                            isrs = TheIsrs,
+                            error_code = decode_error_code(ErrorCode)
+                           },
+    decode_partitions(metadata, N - 1, T, [H | Acc]);
+decode_partitions(produce, N, Binary, Acc) ->
+    <<Id:?ID, ErrorCode:?ERROR_CODE, Offset:?OFFSET_S, T/binary>> = Binary,
+    H = #partition_response{id = Id,
+                            offset = Offset,
+                            error_code = decode_error_code(ErrorCode)},
+    decode_partitions(produce, N - 1, T, [H | Acc]);
+decode_partitions(offset, N, Binary, Acc) ->
+    <<Id:?ID,
+      ErrorCode:?ERROR_CODE,
+      No:?ARRAY_SIZE_S,
+      Offsets:No/?OFFSETS, T/binary>> = Binary,
+    TheOffsets = [Offset || <<Offset:?OFFSET_S>> <= Offsets],
+    H = #partition_response{id = Id,
+                            offset = TheOffsets,
+                            error_code = decode_error_code(ErrorCode)},
+    decode_partitions(offset, N - 1, T, [H | Acc]).
+
+decode_error_code(N) ->
+    {_, Code} = lists:keyfind(N, 1, ?ERROR_CODES_TABLE),
+    Code.
 
 %% ===================================================================
 %% Common parts
