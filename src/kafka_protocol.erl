@@ -152,6 +152,9 @@ decode(metadata, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
 decode(produce, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #produce_response{corr_id = CorrId,
                       topics = decode_topics(produce, No, T, [])};
+decode(fetch, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    #fetch_response{corr_id = CorrId,
+                    topics = decode_topics(fetch, No, T, [])};
 decode(offset, <<_:?SIZE_S, CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #offset_response{corr_id = CorrId,
                     topics = decode_topics(offset, No, T, [])}.
@@ -253,6 +256,11 @@ decode_topics(produce, N, Binary, Acc) ->
     {Partitions, T} = decode_partitions(produce, No, Parts, []),
     H = #topic_response{name = Name, partitions = Partitions},
     decode_topics(produce, N - 1, T, [H | Acc]);
+decode_topics(fetch, N, Binary, Acc) ->
+    <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(produce, No, Parts, []),
+    H = #topic_response{name = Name, partitions = Partitions},
+    decode_topics(fetch, N - 1, T, [H | Acc]);
 decode_topics(offset, N, Binary, Acc) ->
     <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
     {Partitions, T} = decode_partitions(offset, No, Parts, []),
@@ -284,6 +292,20 @@ decode_partitions(produce, N, Binary, Acc) ->
                             offset = Offset,
                             error_code = decode_error_code(ErrorCode)},
     decode_partitions(produce, N - 1, T, [H | Acc]);
+decode_partitions(fetch, N, Binary, Acc) ->
+    <<Id:?ID_S,
+      ErrorCode:?ERROR_CODE,
+      Offset:?OFFSET_S,
+      HighWaterOffset:?OFFSET_S,
+      SetSize:?SIZE_S,
+      Messages:SetSize/bytes,
+      T/binary>> = Binary,
+    H = #partition_response{id = Id,
+                            offset = Offset,
+                            high_watermark = HighWaterOffset,
+                            set = decode_set(fetch, Messages, []),
+                            error_code = decode_error_code(ErrorCode)},
+    decode_partitions(fetch, N - 1, T, [H | Acc]);
 decode_partitions(offset, N, Binary, Acc) ->
     <<Id:?ID_S,
       ErrorCode:?ERROR_CODE,
@@ -294,6 +316,25 @@ decode_partitions(offset, N, Binary, Acc) ->
                             offset = TheOffsets,
                             error_code = decode_error_code(ErrorCode)},
     decode_partitions(offset, N - 1, T, [H | Acc]).
+
+decode_set(fetch, <<>>, Acc) -> lists:reverse(Acc);
+decode_set(fetch, Messages, Acc) ->
+    <<Offsets:?OFFSET_S, Size:?SIZE_S, Message:Size/bytes,T/binary>> = Messages,
+    <<CRC:?CRC_S, Payload/binary>> = Message,
+    <<Magic:?MAGIC_S, Attributes:?ATTRIBUTES_S,
+      KeySize:?BYTES_SIZE_S, Key:KeySize/bytes,
+      ValueSize:?BYTES_SIZE_S, Value:ValueSize/bytes>> = Payload,
+    H = case erlang:crc32(Payload) of
+            CRC ->
+                #set_response{offset = Offsets,
+                              magic = Magic,
+                              attributes = Attributes,
+                              key = Key,
+                              value = Value};
+            _ ->
+                #set_response{offset = Offsets, error_code = 'InvalidMessage'}
+        end,
+    decode_set(fetch, T, [H | Acc]).
 
 decode_error_code(N) ->
     {_, Code} = lists:keyfind(N, 1, ?ERROR_CODES_TABLE),

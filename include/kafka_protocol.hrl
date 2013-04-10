@@ -56,17 +56,28 @@
 %% ===================================================================
 
 %% responses
+-record(set_response, {offset :: integer(),
+                       magic :: integer(),
+                       attributes :: integer(),
+                       key :: binary(),
+                       value :: binary(),
+                       error_code :: atom()
+                      }).
 -record(partition_response, {id :: integer(),
                              error_code :: atom(),
                              %% metadata
                              leader :: integer(),
                              replicas :: [integer()],
                              isrs :: [integer()],
-                             %% produce, offset
-                             offset :: integer() | [integer()]}).
+                             %% produce, fetch, offset
+                             offset :: integer() | [integer()],
+                             %% fetch,
+                             high_watermark :: integer(),
+                             set :: [#set_response{}]
+                            }).
 -record(topic_response, {name :: binary(),
                          partitions = [] :: [#partition_response{}],
-                         error_code :: atom()
+                         error_code = 'NoError' :: atom()
                         }).
 
 -record(broker, {node_id :: integer(),
@@ -78,5 +89,7 @@
                             topics = [] :: [#topic_response{}]}).
 -record(produce_response, {corr_id :: integer(),
                            topics = [] :: [#topic_response{}]}).
+-record(fetch_response, {corr_id :: integer(),
+                         topics = [] :: [#topic_response{}]}).
 -record(offset_response, {corr_id :: integer(),
                          topics = []:: [#topic_response{}]}).
