@@ -64,11 +64,14 @@
 -define(CORR_ID_S, 32/signed).
 -define(ARRAY_SIZE_S, 32/signed).
 -define(STRING_SIZE_S, 16/signed).
--define(ID, 32/signed).
+-define(ID_S, 32/signed).
 -define(ERROR_CODE, 16/signed).
 
 %% produce, offset
 -define(OFFSETS, binary-unit:64).
+
+%% produce, fetch
+-define(TIMEOUT_S, 32/signed).
 
 %% metadata
 -define(LEADER, 32/signed).
@@ -77,12 +80,14 @@
 
 %% produce
 -define(ACKS_S, 16/signed).
--define(TIMEOUT_S, 32/signed).
 -define(BYTES_SIZE_S, 32/signed).
 -define(CRC_S, 32/signed).
 -define(MAGIC_S, 8/signed).
 -define(ATTRIBUTES_S, 8/signed).
 -define(OFFSET_S, 64/signed).
+
+%% fetch
+-define(MIN_S, 32/signed).
 
 %% offset
 -define(TIME_S, 64/signed).
@@ -108,6 +113,7 @@
 %% What decoder/type keys to use.
 -define(API_KEY_TABLE, [{metadata, ?METADATA_REQUEST},
                         {produce, ?PRODUCE_REQUEST},
+                        {fetch, ?FETCH_REQUEST},
                         {offset, ?OFFSET_REQUEST}
                        ]).
 
@@ -163,25 +169,27 @@ encode(#produce{acks = RequiredAcks, timeout = Timeout, topics = Topics}) ->
      [<<RequiredAcks:?ACKS_S, Timeout:?TIMEOUT_S,
         (length(Topics)):?ARRAY_SIZE_S>>,
       [encode_topic(produce, Topic) || Topic <- Topics]];
+encode(#fetch{replica = Id,timeout =Timeout,min_bytes = Min,topics = Topics}) ->
+    [<<Id:?ID_S, Timeout:?TIMEOUT_S, Min:?MIN_S,
+       (length(Topics)):?ARRAY_SIZE_S>>,
+     [encode_topic(fetch, Topic) || Topic <- Topics]];
 encode(#offset{replica = Id, topics = Topics}) ->
-    [<<Id:?ID, (length(Topics)):?ARRAY_SIZE_S>>,
+    [<<Id:?ID_S, (length(Topics)):?ARRAY_SIZE_S>>,
      [encode_topic(offset, Topic) || Topic <- Topics]].
 
-encode_topic(produce, #topic{name = Name, partitions = Partitions}) ->
+encode_topic(Type, #topic{name = Name, partitions = Partitions}) ->
     [encode_latin1_to_string(Name),
      <<(length(Partitions)):?ARRAY_SIZE_S>>,
-     [encode_partition(produce, Partition) || Partition <- Partitions]];
-encode_topic(offset, #topic{name = Name, partitions = Parts}) ->
-    [encode_latin1_to_string(Name),
-     <<(length(Parts)):?ARRAY_SIZE_S>>,
-     [encode_partition(offset, Part) || Part <- Parts]].
+     [encode_partition(Type, Partition) || Partition <- Partitions]].
 
 encode_partition(produce, #partition{id = Id, set = Set}) ->
     EncodedSet = encode_set(produce, Set),
-    [<<Id:?ID, (iolist_size(EncodedSet)):?SIZE_S>>, EncodedSet];
+    [<<Id:?ID_S, (iolist_size(EncodedSet)):?SIZE_S>>, EncodedSet];
+encode_partition(fetch, #partition{id = Id, offset = Offset,max_bytes = Max}) ->
+    [<<Id:?ID_S, Offset:?OFFSET_S, Max:?MAX_S>>];
 encode_partition(offset, Partition = #partition{}) ->
     #partition{id = Id, time = Time, max_number_of_offsets = Max} = Partition,
-    <<Id:?ID, Time:?TIME_S, Max:?MAX_S>>.
+    <<Id:?ID_S, Time:?TIME_S, Max:?MAX_S>>.
 
 %% N.B., MessageSets are not preceded by an int32 like other array elements
 %%       in the protocol.
@@ -222,7 +230,7 @@ encode_bytes(Binary) -> <<(byte_size(Binary)):?BYTES_SIZE_S, Binary/binary>>.
 
 decode_brokers(0, T, Acc) -> {lists:reverse(Acc), T};
 decode_brokers(N, Binary, Acc) ->
-    <<NodeId:?ID, HS:?STRING_SIZE_S, Host:HS/bytes, Port:?PORT, T/binary>> =
+    <<NodeId:?ID_S, HS:?STRING_SIZE_S, Host:HS/bytes, Port:?PORT, T/binary>> =
         Binary,
     H = #broker{node_id = NodeId, host = Host, port = Port},
     decode_brokers(N - 1, T, [H | Acc]).
@@ -254,15 +262,15 @@ decode_topics(offset, N, Binary, Acc) ->
 decode_partitions(_, 0, T, Acc) -> {lists:reverse(Acc), T};
 decode_partitions(metadata, N, Binary, Acc) ->
     <<ErrorCode:?ERROR_CODE,
-      Id:?ID,
+      Id:?ID_S,
       Leader:?LEADER,
       ReplicasNo:?ARRAY_SIZE_S,
       Replicas:ReplicasNo/?IDS,
       IsrsNo:?ARRAY_SIZE_S,
       Isrs:IsrsNo/?IDS,
       T/binary>> = Binary,
-    TheReplicas = [Replica || <<Replica:?ID>> <= Replicas],
-    TheIsrs = [Isr || <<Isr:?ID>> <= Isrs],
+    TheReplicas = [Replica || <<Replica:?ID_S>> <= Replicas],
+    TheIsrs = [Isr || <<Isr:?ID_S>> <= Isrs],
     H = #partition_response{id = Id,
                             leader = Leader,
                             replicas = TheReplicas,
@@ -271,13 +279,13 @@ decode_partitions(metadata, N, Binary, Acc) ->
                            },
     decode_partitions(metadata, N - 1, T, [H | Acc]);
 decode_partitions(produce, N, Binary, Acc) ->
-    <<Id:?ID, ErrorCode:?ERROR_CODE, Offset:?OFFSET_S, T/binary>> = Binary,
+    <<Id:?ID_S, ErrorCode:?ERROR_CODE, Offset:?OFFSET_S, T/binary>> = Binary,
     H = #partition_response{id = Id,
                             offset = Offset,
                             error_code = decode_error_code(ErrorCode)},
     decode_partitions(produce, N - 1, T, [H | Acc]);
 decode_partitions(offset, N, Binary, Acc) ->
-    <<Id:?ID,
+    <<Id:?ID_S,
       ErrorCode:?ERROR_CODE,
       No:?ARRAY_SIZE_S,
       Offsets:No/?OFFSETS, T/binary>> = Binary,

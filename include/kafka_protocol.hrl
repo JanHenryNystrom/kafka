@@ -32,16 +32,23 @@
 -record(partition, {id :: integer(),
                     set = [] :: [#set{}],
                     time :: integer(),
-                    max_number_of_offsets :: integer()}).
+                    offset :: integer(),
+                    max_bytes :: integer(),
+                    max_number_of_offsets :: integer()
+                   }).
 -record(topic, {name :: string() | binary(),
                 partitions = [] :: [#partition{}]}).
 
 %% requests
 -record(metadata, {topics = [] :: [#topic{}]}).
+-record(fetch, {replica = -1 :: integer(),
+                timeout :: pos_integer(),
+                min_bytes :: pos_integer(),
+                topics = [] :: [#topic{}]}).
 -record(produce, {acks = 0 :: integer(),
                   timeout = 100 :: non_neg_integer(),
                   topics = [] :: [#topic{}]}).
--record(offset, {replica = 0 :: non_neg_integer(),
+-record(offset, {replica = -1 :: non_neg_integer(),
                  topics = [#topic{}]}).
 
 %% ===================================================================
