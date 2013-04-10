@@ -65,7 +65,7 @@
 -define(ARRAY_SIZE_S, 32/signed).
 -define(STRING_SIZE_S, 16/signed).
 -define(ID_S, 32/signed).
--define(ERROR_CODE, 16/signed).
+-define(ERROR_CODE_S, 16/signed).
 
 %% produce, offset
 -define(OFFSETS, binary-unit:64).
@@ -240,7 +240,7 @@ decode_brokers(N, Binary, Acc) ->
 
 decode_topics(_, 0, <<>>, Acc) -> lists:reverse(Acc);
 decode_topics(metadata, N, Binary, Acc) ->
-    <<ErrorCode:?ERROR_CODE,
+    <<ErrorCode:?ERROR_CODE_S,
       NS:?STRING_SIZE_S,
       Name:NS/bytes,
       No:?ARRAY_SIZE_S,
@@ -258,7 +258,7 @@ decode_topics(produce, N, Binary, Acc) ->
     decode_topics(produce, N - 1, T, [H | Acc]);
 decode_topics(fetch, N, Binary, Acc) ->
     <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
-    {Partitions, T} = decode_partitions(produce, No, Parts, []),
+    {Partitions, T} = decode_partitions(fetch, No, Parts, []),
     H = #topic_response{name = Name, partitions = Partitions},
     decode_topics(fetch, N - 1, T, [H | Acc]);
 decode_topics(offset, N, Binary, Acc) ->
@@ -269,7 +269,7 @@ decode_topics(offset, N, Binary, Acc) ->
 
 decode_partitions(_, 0, T, Acc) -> {lists:reverse(Acc), T};
 decode_partitions(metadata, N, Binary, Acc) ->
-    <<ErrorCode:?ERROR_CODE,
+    <<ErrorCode:?ERROR_CODE_S,
       Id:?ID_S,
       Leader:?LEADER,
       ReplicasNo:?ARRAY_SIZE_S,
@@ -287,28 +287,27 @@ decode_partitions(metadata, N, Binary, Acc) ->
                            },
     decode_partitions(metadata, N - 1, T, [H | Acc]);
 decode_partitions(produce, N, Binary, Acc) ->
-    <<Id:?ID_S, ErrorCode:?ERROR_CODE, Offset:?OFFSET_S, T/binary>> = Binary,
+    <<Id:?ID_S, ErrorCode:?ERROR_CODE_S, Offset:?OFFSET_S, T/binary>> = Binary,
     H = #partition_response{id = Id,
                             offset = Offset,
                             error_code = decode_error_code(ErrorCode)},
     decode_partitions(produce, N - 1, T, [H | Acc]);
 decode_partitions(fetch, N, Binary, Acc) ->
     <<Id:?ID_S,
-      ErrorCode:?ERROR_CODE,
-      Offset:?OFFSET_S,
+      ErrorCode:?ERROR_CODE_S,
+      %% Unlike the docs there is just the high_watermark (no offset).
       HighWaterOffset:?OFFSET_S,
       SetSize:?SIZE_S,
       Messages:SetSize/bytes,
       T/binary>> = Binary,
     H = #partition_response{id = Id,
-                            offset = Offset,
                             high_watermark = HighWaterOffset,
                             set = decode_set(fetch, Messages, []),
                             error_code = decode_error_code(ErrorCode)},
     decode_partitions(fetch, N - 1, T, [H | Acc]);
 decode_partitions(offset, N, Binary, Acc) ->
     <<Id:?ID_S,
-      ErrorCode:?ERROR_CODE,
+      ErrorCode:?ERROR_CODE_S,
       No:?ARRAY_SIZE_S,
       Offsets:No/?OFFSETS, T/binary>> = Binary,
     TheOffsets = [Offset || <<Offset:?OFFSET_S>> <= Offsets],
@@ -321,11 +320,10 @@ decode_set(fetch, <<>>, Acc) -> lists:reverse(Acc);
 decode_set(fetch, Messages, Acc) ->
     <<Offsets:?OFFSET_S, Size:?SIZE_S, Message:Size/bytes,T/binary>> = Messages,
     <<CRC:?CRC_S, Payload/binary>> = Message,
-    <<Magic:?MAGIC_S, Attributes:?ATTRIBUTES_S,
-      KeySize:?BYTES_SIZE_S, Key:KeySize/bytes,
-      ValueSize:?BYTES_SIZE_S, Value:ValueSize/bytes>> = Payload,
     H = case erlang:crc32(Payload) of
             CRC ->
+                <<Magic:?MAGIC_S,Attributes:?ATTRIBUTES_S,T1/binary>> = Payload,
+                {Key, Value} = decode_key_value(T1),
                 #set_response{offset = Offsets,
                               magic = Magic,
                               attributes = Attributes,
@@ -335,6 +333,15 @@ decode_set(fetch, Messages, Acc) ->
                 #set_response{offset = Offsets, error_code = 'InvalidMessage'}
         end,
     decode_set(fetch, T, [H | Acc]).
+
+decode_key_value(<<-1:?BYTES_SIZE_S, T/binary>>) ->
+    {<<>>, decode_value(T)};
+decode_key_value(<<KeySize:?BYTES_SIZE_S, Key:KeySize/bytes, T/binary>>) ->
+    {Key, decode_value(T)}.
+
+decode_value(<<-1:?BYTES_SIZE_S>>) -> <<>>;
+decode_value(<<ValueSize:?BYTES_SIZE_S, Value:ValueSize/bytes>>) -> Value.
+
 
 decode_error_code(N) ->
     {_, Code} = lists:keyfind(N, 1, ?ERROR_CODES_TABLE),

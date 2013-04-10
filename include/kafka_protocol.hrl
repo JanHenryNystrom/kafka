@@ -61,7 +61,7 @@
                        attributes :: integer(),
                        key :: binary(),
                        value :: binary(),
-                       error_code :: atom()
+                       error_code  = 'NoError' :: atom()
                       }).
 -record(partition_response, {id :: integer(),
                              error_code :: atom(),
