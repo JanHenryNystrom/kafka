@@ -131,10 +131,8 @@
 %%--------------------------------------------------------------------
 encode(Type, CorrId, ClientId, Args) ->
     {Type, ApiKey} = lists:keyfind(Type, 1, ?API_KEY_TABLE),
-    Request = [<<ApiKey:?ApiKey, ?API_VERSION, CorrId:?CORR_ID_S>>,
-               encode_latin1_to_string(ClientId), encode(Args)],
-    Size = iolist_size(Request),
-    [<<Size:?SIZE_S>>, Request].
+    [<<ApiKey:?ApiKey, ?API_VERSION, CorrId:?CORR_ID_S>>,
+     encode_latin1_to_string(ClientId), encode(Args)].
 
 %%--------------------------------------------------------------------
 %% Function: decode(Type, Response) -> ResponseRecord.
@@ -144,18 +142,18 @@ encode(Type, CorrId, ClientId, Args) ->
 %%--------------------------------------------------------------------
 -spec decode(atom(), binary()) -> response().
 %%--------------------------------------------------------------------
-decode(metadata, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+decode(metadata, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     {Brokers, <<No1:?ARRAY_SIZE_S, T1/binary>>} = decode_brokers(No, T, []),
     #metadata_response{corr_id = CorrId,
                        brokers = Brokers,
                        topics = decode_topics(metadata, No1, T1, [])};
-decode(produce, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+decode(produce, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #produce_response{corr_id = CorrId,
                       topics = decode_topics(produce, No, T, [])};
-decode(fetch, <<_:?SIZE_S,CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+decode(fetch, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #fetch_response{corr_id = CorrId,
                     topics = decode_topics(fetch, No, T, [])};
-decode(offset, <<_:?SIZE_S, CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+decode(offset, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #offset_response{corr_id = CorrId,
                     topics = decode_topics(offset, No, T, [])}.
 
