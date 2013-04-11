@@ -37,6 +37,9 @@
 -type response() :: #metadata_response{} | #produce_response{} |
                     #offset_response{}.
 
+%% Exported Types
+-export_types([request/0, response/0]).
+
 %% Records
 
 %% Defines
