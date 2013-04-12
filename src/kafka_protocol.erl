@@ -33,9 +33,11 @@
 -include_lib("kafka/include/kafka_protocol.hrl").
 
 %% Types
--type request() :: #metadata{} | #produce{} | #offset{}.
+-type request() :: #metadata{} | #produce{} | #offset{} | #offset_commit{} |
+                   #offset_fetch{}.
 -type response() :: #metadata_response{} | #produce_response{} |
-                    #offset_response{}.
+                    #offset_response{} | #offset_commit_response{} |
+                    #offset_fetch_response{}.
 
 %% Exported Types
 -export_types([request/0, response/0]).
@@ -117,7 +119,9 @@
 -define(API_KEY_TABLE, [{metadata, ?METADATA_REQUEST},
                         {produce, ?PRODUCE_REQUEST},
                         {fetch, ?FETCH_REQUEST},
-                        {offset, ?OFFSET_REQUEST}
+                        {offset, ?OFFSET_REQUEST},
+                        {offset_commit, ?OFFSET_COMMIT_REQUEST},
+                        {offset_fetch, ?OFFSET_FETCH_REQUEST}
                        ]).
 
 %% ===================================================================
@@ -158,7 +162,13 @@ decode(fetch, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
                     topics = decode_topics(fetch, No, T, [])};
 decode(offset, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
     #offset_response{corr_id = CorrId,
-                    topics = decode_topics(offset, No, T, [])}.
+                     topics = decode_topics(offset, No, T, [])};
+decode(offset_commit, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    #offset_commit_response{corr_id = CorrId,
+                            topics = decode_topics(offset_commit, No, T, [])};
+decode(offset_fetch, <<CorrId:?CORR_ID_S,No:?ARRAY_SIZE_S,T/binary>>) ->
+    #offset_fetch_response{corr_id = CorrId,
+                           topics = decode_topics(offset_fetch, No, T, [])}.
 
 %% ===================================================================
 %% Internal functions.
@@ -179,7 +189,13 @@ encode(#fetch{replica = Id,timeout =Timeout,min_bytes = Min,topics = Topics}) ->
      [encode_topic(fetch, Topic) || Topic <- Topics]];
 encode(#offset{replica = Id, topics = Topics}) ->
     [<<Id:?ID_S, (length(Topics)):?ARRAY_SIZE_S>>,
-     [encode_topic(offset, Topic) || Topic <- Topics]].
+     [encode_topic(offset, Topic) || Topic <- Topics]];
+encode(#offset_commit{consumer_group = Group, topics = Topics}) ->
+    [encode_latin1_to_string(Group), <<(length(Topics)):?ARRAY_SIZE_S>>,
+     [encode_topic(offset_commit, Topic) || Topic <- Topics]];
+encode(#offset_fetch{consumer_group = Group, topics = Topics}) ->
+    [encode_latin1_to_string(Group), <<(length(Topics)):?ARRAY_SIZE_S>>,
+     [encode_topic(offset_fetch, Topic) || Topic <- Topics]].
 
 encode_topic(Type, #topic{name = Name, partitions = Partitions}) ->
     [encode_latin1_to_string(Name),
@@ -193,7 +209,13 @@ encode_partition(fetch, #partition{id = Id, offset = Offset,max_bytes = Max}) ->
     [<<Id:?ID_S, Offset:?OFFSET_S, Max:?MAX_S>>];
 encode_partition(offset, Partition = #partition{}) ->
     #partition{id = Id, time = Time, max_number_of_offsets = Max} = Partition,
-    <<Id:?ID_S, Time:?TIME_S, Max:?MAX_S>>.
+    <<Id:?ID_S, Time:?TIME_S, Max:?MAX_S>>;
+encode_partition(offset_commit, Partition = #partition{}) ->
+    #partition{id = Id, offset = Offset, metadata = MetaData} = Partition,
+    [<<Id:?ID_S, Offset:?OFFSET_S>>, encode_bytes(MetaData)];
+encode_partition(offset_fetch, #partition{id = Id, metadata = MetaData}) ->
+    [<<Id:?ID_S>>, encode_string(MetaData)].
+
 
 %% N.B., MessageSets are not preceded by an int32 like other array elements
 %%       in the protocol.
@@ -217,6 +239,11 @@ encode_message(produce, Message = #message{}) ->
 encode_string_array(Strings) ->
     [<<(length(Strings)):?ARRAY_SIZE_S>>,
      [encode_latin1_to_string(String) || String <- Strings]].
+
+encode_string("") -> <<-1:?STRING_SIZE_S>>;
+encode_string(<<"">>) -> <<-1:?STRING_SIZE_S>>;
+encode_string(Binary) ->
+    <<(byte_size(Binary)):?STRING_SIZE_S, Binary/binary>>.
 
 encode_latin1_to_string("") -> <<-1:?STRING_SIZE_S>>;
 encode_latin1_to_string(<<"">>) -> <<-1:?STRING_SIZE_S>>;
@@ -266,7 +293,17 @@ decode_topics(offset, N, Binary, Acc) ->
     <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
     {Partitions, T} = decode_partitions(offset, No, Parts, []),
     H = #topic_response{name = Name, partitions = Partitions},
-    decode_topics(offset, N - 1, T, [H | Acc]).
+    decode_topics(offset, N - 1, T, [H | Acc]);
+decode_topics(offset_commit, N, Binary, Acc) ->
+    <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(offset_commit, No, Parts, []),
+    H = #topic_response{name = Name, partitions = Partitions},
+    decode_topics(offset_commit, N - 1, T, [H | Acc]);
+decode_topics(offset_fetch, N, Binary, Acc) ->
+    <<NS:?STRING_SIZE_S, Name:NS/bytes,No:?ARRAY_SIZE_S,Parts/binary>> = Binary,
+    {Partitions, T} = decode_partitions(offset_fetch, No, Parts, []),
+    H = #topic_response{name = Name, partitions = Partitions},
+    decode_topics(offset_fetch, N - 1, T, [H | Acc]).
 
 decode_partitions(_, 0, T, Acc) -> {lists:reverse(Acc), T};
 decode_partitions(metadata, N, Binary, Acc) ->
@@ -315,7 +352,22 @@ decode_partitions(offset, N, Binary, Acc) ->
     H = #partition_response{id = Id,
                             offset = TheOffsets,
                             error_code = decode_error_code(ErrorCode)},
-    decode_partitions(offset, N - 1, T, [H | Acc]).
+    decode_partitions(offset, N - 1, T, [H | Acc]);
+decode_partitions(offset_commit, N, Binary, Acc) ->
+    <<Id:?ID_S, ErrorCode:?ERROR_CODE_S, T/binary>> = Binary,
+    H = #partition_response{id = Id,
+                            error_code = decode_error_code(ErrorCode)},
+    decode_partitions(offset_commit, N - 1, T, [H | Acc]);
+decode_partitions(offset_fetch, N, Binary, Acc) ->
+    <<Id:?ID_S, Offset:?OFFSET_S,
+      MetaSize:?STRING_SIZE_S,
+      MetaData:MetaSize/bytes,
+      ErrorCode:?ERROR_CODE_S, T/binary>> = Binary,
+    H = #partition_response{id = Id,
+                            offset = Offset,
+                            metadata = MetaData,
+                            error_code = decode_error_code(ErrorCode)},
+    decode_partitions(offset_fetch, N - 1, T, [H | Acc]).
 
 decode_set(fetch, <<>>, Acc) -> lists:reverse(Acc);
 decode_set(fetch, Messages, Acc) ->

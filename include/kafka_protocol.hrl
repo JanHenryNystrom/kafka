@@ -34,7 +34,9 @@
                     time :: integer(),
                     offset :: integer(),
                     max_bytes :: integer(),
-                    max_number_of_offsets :: integer()
+                    max_number_of_offsets :: integer(),
+                    %% offset_commit
+                    metadata = <<>> :: binary()
                    }).
 -record(topic, {name :: string() | binary(),
                 partitions = [] :: [#partition{}]}).
@@ -50,6 +52,10 @@
                   topics = [] :: [#topic{}]}).
 -record(offset, {replica = -1 :: non_neg_integer(),
                  topics = [#topic{}]}).
+-record(offset_commit, {consumer_group :: string() | binary(),
+                        topics = [] :: #topic{}}).
+-record(offset_fetch, {consumer_group :: string() | binary(),
+                       topics = [] :: #topic{}}).
 
 %% ===================================================================
 %% Decoding
@@ -73,7 +79,9 @@
                              offset :: integer() | [integer()],
                              %% fetch,
                              high_watermark :: integer(),
-                             set :: [#set_response{}]
+                             set :: [#set_response{}],
+                             %% offset_fetch
+                             metadata :: binary()
                             }).
 -record(topic_response, {name :: binary(),
                          partitions = [] :: [#partition_response{}],
@@ -93,3 +101,7 @@
                          topics = [] :: [#topic_response{}]}).
 -record(offset_response, {corr_id :: integer(),
                          topics = []:: [#topic_response{}]}).
+-record(offset_commit_response, {corr_id :: integer(),
+                                 topics = []:: [#topic_response{}]}).
+-record(offset_fetch_response, {corr_id :: integer(),
+                                topics = []:: [#topic_response{}]}).
